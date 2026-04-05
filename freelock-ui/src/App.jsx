@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { ethers } from "ethers"
 
 const CONTRACT_ADDRESS = "0xd2Ef73d11247AaC4E17585386756612f7084F5e1"
@@ -10,6 +10,7 @@ const ABI = [
   "function submitWork(uint256,string)",
   "function approveWork(uint256)",
   "function raiseDispute(uint256,string)",
+  "function resolveDispute(uint256,uint256)",
   "function contracts(uint256) view returns (uint256,address,address,address,uint256,uint256,string,string,uint8,string,string,uint256)",
   "function getClientContracts(address) view returns (uint256[])",
   "function getFreelancerContracts(address) view returns (uint256[])",
@@ -64,6 +65,26 @@ export default function App() {
       setStatus("Error: " + err.message)
     }
   }
+
+  useEffect(() => {
+    if (!window.ethereum) return
+    window.ethereum.request({ method: "eth_accounts" }).then(accounts => {
+      if (accounts.length > 0) connectWallet()
+    })
+    window.ethereum.on("accountsChanged", (accounts) => {
+      if (accounts.length === 0) {
+        setAccount(null); setContract(null); setJobs([])
+        setStatus("Wallet disconnected")
+      } else {
+        connectWallet()
+      }
+    })
+    window.ethereum.on("chainChanged", () => window.location.reload())
+    return () => {
+      window.ethereum.removeAllListeners("accountsChanged")
+      window.ethereum.removeAllListeners("chainChanged")
+    }
+  }, [])
 
   const createJob = async () => {
     try {
@@ -134,6 +155,38 @@ export default function App() {
     }
   }
 
+  const disputeJob = async (id) => {
+    try {
+      setLoading(true)
+      setStatus("Raising dispute...")
+      const tx = await contract.raiseDispute(id, "Work not satisfactory")
+      setStatus("⏳ Waiting for confirmation...")
+      await tx.wait()
+      setStatus("⚠️ Dispute raised!")
+      loadJobs()
+    } catch (err) {
+      setStatus("Error: " + err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const resolveDispute = async (id, pct) => {
+    try {
+      setLoading(true)
+      setStatus("Resolving dispute...")
+      const tx = await contract.resolveDispute(id, pct)
+      setStatus("⏳ Waiting for confirmation...")
+      await tx.wait()
+      setStatus("✅ Dispute resolved! Payment split executed.")
+      loadJobs()
+    } catch (err) {
+      setStatus("Error: " + err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const loadJobs = async () => {
     try {
       setStatus("Loading jobs...")
@@ -147,6 +200,7 @@ export default function App() {
           id: Number(j[0]),
           client: j[1],
           freelancer: j[2],
+          arbiter: j[3],
           amount: ethers.formatEther(j[4]),
           title: j[6],
           description: j[7],
@@ -194,7 +248,7 @@ export default function App() {
     jobCard: { background: "#0d1117", border: "1px solid #2a2a4a", borderRadius: 12, padding: 20, marginBottom: 12 },
     jobHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 },
     jobTitle: { fontSize: 16, fontWeight: "bold", color: "#fff" },
-    statusPill: (s) => ({ padding: "4px 12px", borderRadius: 20, fontSize: 11, fontWeight: "bold", background: STATUS_COLOR[s]?.bg, color: STATUS_COLOR[s]?.color }),
+    statusPill: (st) => ({ padding: "4px 12px", borderRadius: 20, fontSize: 11, fontWeight: "bold", background: STATUS_COLOR[st]?.bg, color: STATUS_COLOR[st]?.color }),
     jobMeta: { fontSize: 12, color: "#5a5a7a", marginBottom: 4 },
     jobAmount: { fontSize: 20, fontWeight: "bold", color: "#f6851b", marginBottom: 16 },
     divider: { borderTop: "1px solid #2a2a4a", margin: "16px 0" },
@@ -204,7 +258,6 @@ export default function App() {
 
   return (
     <div style={s.page}>
-      {/* Navbar */}
       <nav style={s.nav}>
         <div style={s.navLogo}>🦊 FreeLock</div>
         {account && (
@@ -216,26 +269,19 @@ export default function App() {
       </nav>
 
       <div style={s.body}>
-        {/* Status bar */}
         {status && <div style={s.statusBar}>⚡ {status}</div>}
 
         {!account ? (
-          /* Connect Screen */
           <div style={s.connectBox}>
             <div style={s.connectCard}>
               <div style={s.foxEmoji}>🦊</div>
               <div style={s.connectTitle}>Welcome to FreeLock</div>
-              <div style={s.connectSub}>
-                Trustless freelance agreements powered by blockchain. Connect your wallet to get started.
-              </div>
-              <button onClick={connectWallet} style={s.btnOrange}>
-                Connect MetaMask
-              </button>
+              <div style={s.connectSub}>Trustless freelance agreements powered by blockchain.</div>
+              <button onClick={connectWallet} style={s.btnOrange}>Connect MetaMask</button>
             </div>
           </div>
         ) : (
           <>
-            {/* Role Switcher */}
             <div style={s.roleBar}>
               <button style={s.roleBtn(role === "client", "#f6851b")}
                 onClick={() => { setRole("client"); setJobs([]) }}>
@@ -247,7 +293,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* Create Job */}
             {role === "client" && (
               <div style={s.card}>
                 <div style={s.cardTitle}>📝 New Job Contract</div>
@@ -257,36 +302,24 @@ export default function App() {
                   </button>
                 ) : (
                   <>
-                    <input style={s.input} placeholder="Freelancer wallet address (0x...)"
-                      value={freelancer} onChange={e => setFreelancer(e.target.value)} />
-                    <input style={s.input} placeholder="Job title"
-                      value={title} onChange={e => setTitle(e.target.value)} />
-                    <input style={s.input} placeholder="Description"
-                      value={description} onChange={e => setDescription(e.target.value)} />
-                    <input style={s.input} type="date"
-                      value={deadline} onChange={e => setDeadline(e.target.value)} />
-                    <input style={s.input} placeholder="Amount in ETH (e.g. 0.01)"
-                      value={amount} onChange={e => setAmount(e.target.value)} />
+                    <input style={s.input} placeholder="Freelancer wallet address (0x...)" value={freelancer} onChange={e => setFreelancer(e.target.value)} />
+                    <input style={s.input} placeholder="Job title" value={title} onChange={e => setTitle(e.target.value)} />
+                    <input style={s.input} placeholder="Description" value={description} onChange={e => setDescription(e.target.value)} />
+                    <input style={s.input} type="date" value={deadline} onChange={e => setDeadline(e.target.value)} />
+                    <input style={s.input} placeholder="Amount in ETH (e.g. 0.01)" value={amount} onChange={e => setAmount(e.target.value)} />
                     <button onClick={createJob} style={s.btnPrimary} disabled={loading}>
                       {loading ? "Processing..." : "🔒 Deploy Contract"}
                     </button>
-                    <button onClick={() => setShowForm(false)} style={s.btnSecondary}>
-                      Cancel
-                    </button>
+                    <button onClick={() => setShowForm(false)} style={s.btnSecondary}>Cancel</button>
                   </>
                 )}
               </div>
             )}
 
-            {/* Jobs List */}
             <div style={s.card}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-                <div style={s.cardTitle}>
-                  {role === "client" ? "💼 My Contracts" : "🧑‍💻 Assigned Jobs"}
-                </div>
-                <button onClick={loadJobs} style={s.btnSecondary}>
-                  🔄 Refresh
-                </button>
+                <div style={s.cardTitle}>{role === "client" ? "💼 My Contracts" : "🧑‍💻 Assigned Jobs"}</div>
+                <button onClick={loadJobs} style={s.btnSecondary}>🔄 Refresh</button>
               </div>
 
               {jobs.length === 0 ? (
@@ -300,12 +333,14 @@ export default function App() {
                     key={job.id}
                     job={job}
                     role={role}
+                    account={account}
                     s={s}
                     loading={loading}
                     onFund={(amt) => fundJob(job.id, amt)}
                     onSubmit={() => submitWork(job.id)}
                     onApprove={() => approveJob(job.id)}
-                    onDispute={() => contract.raiseDispute(job.id, "Not satisfied")}
+                    onDispute={() => disputeJob(job.id)}
+                    onResolve={(id, pct) => resolveDispute(id, pct)}
                     shortAddr={shortAddr}
                   />
                 ))
@@ -318,7 +353,7 @@ export default function App() {
   )
 }
 
-function JobCard({ job, role, s, loading, onFund, onSubmit, onApprove, onDispute, shortAddr }) {
+function JobCard({ job, role, account, s, loading, onFund, onSubmit, onApprove, onDispute, onResolve, shortAddr }) {
   const [fundAmt, setFundAmt] = useState("")
 
   return (
@@ -332,57 +367,76 @@ function JobCard({ job, role, s, loading, onFund, onSubmit, onApprove, onDispute
       </div>
 
       <div style={s.jobAmount}>{job.amount} ETH</div>
-
-      <div style={s.jobMeta}>
-        {role === "client" ? `🧑‍💻 Freelancer: ${shortAddr(job.freelancer)}` : `👔 Client: ${shortAddr(job.client)}`}
-      </div>
+      <div style={s.jobMeta}>{role === "client" ? `🧑‍💻 Freelancer: ${shortAddr(job.freelancer)}` : `👔 Client: ${shortAddr(job.client)}`}</div>
       <div style={s.jobMeta}>🔖 Contract ID: #{job.id}</div>
+      <div style={s.jobMeta}>⚖️ Arbiter: {shortAddr(job.arbiter)}</div>
 
       <div style={s.divider} />
 
-      {/* Actions */}
       {role === "client" && job.status === "OPEN" && (
         <div style={{ display: "flex", alignItems: "center" }}>
-          <input
-            style={s.inlineInput}
-            placeholder="ETH amount"
-            value={fundAmt}
-            onChange={e => setFundAmt(e.target.value)}
-          />
-          <button onClick={() => onFund(fundAmt)} style={s.btnGreen} disabled={loading}>
-            🔒 Fund Escrow
-          </button>
+          <input style={s.inlineInput} placeholder="ETH amount" value={fundAmt} onChange={e => setFundAmt(e.target.value)} />
+          <button onClick={() => onFund(fundAmt)} style={s.btnGreen} disabled={loading}>🔒 Fund Escrow</button>
         </div>
       )}
 
       {role === "client" && job.status === "SUBMITTED" && (
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={onApprove} style={s.btnGreen} disabled={loading}>
-            ✅ Approve & Release
-          </button>
-          <button onClick={onDispute} style={s.btnRed} disabled={loading}>
-            ⚠️ Dispute
-          </button>
+          <button onClick={onApprove} style={s.btnGreen} disabled={loading}>✅ Approve & Release</button>
+          <button onClick={onDispute} style={s.btnRed} disabled={loading}>⚠️ Dispute</button>
         </div>
       )}
 
       {role === "freelancer" && job.status === "FUNDED" && (
-        <button onClick={onSubmit} style={s.btnBlue} disabled={loading}>
-          📤 Submit Work
-        </button>
+        <button onClick={onSubmit} style={s.btnBlue} disabled={loading}>📤 Submit Work</button>
+      )}
+
+      {job.status === "DISPUTED" && account?.toLowerCase() === job.arbiter?.toLowerCase() && (
+        <ArbiterPanel jobId={job.id} onResolve={onResolve} s={s} loading={loading} />
+      )}
+
+      {job.status === "DISPUTED" && account?.toLowerCase() !== job.arbiter?.toLowerCase() && (
+        <div style={{ color: "#f87171", fontSize: 13, padding: "10px 0" }}>
+          ⚠️ Dispute raised — waiting for arbiter to resolve.
+        </div>
       )}
 
       {job.status === "APPROVED" && (
-        <div style={{ color: "#34d399", fontSize: 13, fontWeight: "bold" }}>
-          🎉 Payment released! Contract complete.
-        </div>
+        <div style={{ color: "#34d399", fontSize: 13, fontWeight: "bold" }}>🎉 Payment released! Contract complete.</div>
+      )}
+
+      {job.status === "RESOLVED" && (
+        <div style={{ color: "#60a5fa", fontSize: 13, fontWeight: "bold" }}>⚖️ Dispute resolved. Payment split executed.</div>
       )}
 
       {job.status === "CANCELLED" && (
-        <div style={{ color: "#9ca3af", fontSize: 13 }}>
-          ❌ Contract cancelled.
-        </div>
+        <div style={{ color: "#9ca3af", fontSize: 13 }}>❌ Contract cancelled.</div>
       )}
+    </div>
+  )
+}
+
+function ArbiterPanel({ jobId, onResolve, s, loading }) {
+  const [pct, setPct] = useState(50)
+
+  return (
+    <div style={{ background: "#1a1a2e", border: "1px solid #f87171", borderRadius: 10, padding: 16 }}>
+      <div style={{ color: "#f87171", fontWeight: "bold", marginBottom: 12 }}>⚠️ Dispute in progress — Arbiter panel</div>
+      <div style={{ marginBottom: 12, fontSize: 13, color: "#a0a0c0" }}>Decide how to split the payment:</div>
+      <input type="range" min="0" max="100" value={pct}
+        onChange={e => setPct(Number(e.target.value))}
+        style={{ width: "100%", accentColor: "#f6851b", marginBottom: 8 }} />
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12, fontSize: 13 }}>
+        <span style={{ color: "#a78bfa" }}>🧑‍💻 Freelancer: {pct}%</span>
+        <span style={{ color: "#60a5fa" }}>👔 Client: {100 - pct}%</span>
+      </div>
+      <div style={{ height: 8, borderRadius: 4, background: "#2a2a4a", marginBottom: 16, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg, #a78bfa, #f6851b)", borderRadius: 4, transition: "width 0.2s" }} />
+      </div>
+      <button onClick={() => onResolve(jobId, pct)} disabled={loading}
+        style={{ ...s.btnPrimary, width: "100%" }}>
+        ⚖️ Execute Resolution
+      </button>
     </div>
   )
 }
